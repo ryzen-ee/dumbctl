@@ -200,6 +200,13 @@ impl App {
                 match event::read() {
                     Ok(Event::Key(key)) => {
                         if key.kind == KeyEventKind::Press {
+                            match key.code {
+                                KeyCode::PageUp | KeyCode::PageDown => continue,
+                                _ => {}
+                            }
+                        }
+
+                        if key.kind == KeyEventKind::Press {
                             if key
                                 .modifiers
                                 .contains(crossterm::event::KeyModifiers::CONTROL)
@@ -595,7 +602,7 @@ impl App {
             ExportContent::SmartOnly => None,
         };
 
-        let path = if self.settings.export_path.is_empty() {
+        let base_dir = if self.settings.export_path.is_empty() {
             let home = if let Ok(sudo_user) = std::env::var("SUDO_USER") {
                 if let Some(home) = dirs::home_dir() {
                     let home_str = home.to_string_lossy().to_string();
@@ -612,19 +619,21 @@ impl App {
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")))
             };
-            let ext = match self.export_format {
-                ExportFormat::Json => "json",
-                ExportFormat::Csv => "csv",
-            };
-            let suffix = match self.export_content {
-                ExportContent::SmartOnly => "_smart",
-                ExportContent::BenchmarkOnly => "_benchmark",
-                ExportContent::Both => "",
-            };
-            home.join(format!("dumbctl_export{}{}.", suffix, ext))
+            home
         } else {
             PathBuf::from(&self.settings.export_path)
         };
+
+        let ext = match self.export_format {
+            ExportFormat::Json => "json",
+            ExportFormat::Csv => "csv",
+        };
+        let suffix = match self.export_content {
+            ExportContent::SmartOnly => "_smart",
+            ExportContent::BenchmarkOnly => "_benchmark",
+            ExportContent::Both => "",
+        };
+        let path = base_dir.join(format!("dumbctl_export{}{}.", suffix, ext));
 
         let result = match self.export_format {
             ExportFormat::Json => {
@@ -764,7 +773,7 @@ impl App {
             default_text.to_string()
         };
 
-        let version = "dumbctl - v0.1.100";
+        let version = "dumbctl - v0.1.102";
         let version_width = version.len() as u16;
         let status_width = area.width.saturating_sub(version_width + 1);
 

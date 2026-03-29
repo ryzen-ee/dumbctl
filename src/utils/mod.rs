@@ -1,4 +1,4 @@
-use crate::disk::{DiskInfo, SmartData, benchmark::BenchmarkResult};
+use crate::disk::{benchmark::BenchmarkResult, DiskInfo, SmartData};
 use serde::Serialize;
 use std::fs::File;
 use std::io::Write;
@@ -49,17 +49,22 @@ pub struct BenchmarkExport {
     pub results: Vec<BenchmarkResult>,
 }
 
-pub fn export_to_json(path: &PathBuf, disk_data: &Option<DiskInfo>, smart_data: &Option<SmartData>, benchmark: &Option<Vec<BenchmarkResult>>) -> Result<(), String> {
+pub fn export_to_json(
+    path: &PathBuf,
+    disk_data: &Option<DiskInfo>,
+    smart_data: &Option<SmartData>,
+    benchmark: &Option<Vec<BenchmarkResult>>,
+) -> Result<(), String> {
     let mut disks = Vec::new();
-    
-    if let (Some(disk), Some(smart)) = (disk_data, smart_data) {
+
+    if let Some(disk) = disk_data {
         disks.push(DiskExport {
             device: disk.device.clone(),
             model: disk.model.clone(),
             serial: disk.serial.clone(),
             size: disk.size,
             media_type: format!("{:?}", disk.media_type),
-            smart_data: Some(SmartExport {
+            smart_data: smart_data.clone().map(|smart| SmartExport {
                 overall_health: smart.overall_health.clone(),
                 power_on_hours: smart.power_on_hours,
                 temperature: smart.temperature,
@@ -68,16 +73,22 @@ pub fn export_to_json(path: &PathBuf, disk_data: &Option<DiskInfo>, smart_data: 
                 uncorrectable_errors: smart.uncorrectable_errors,
                 smart_enabled: smart.smart_enabled,
                 smart_capable: smart.smart_capable,
-                attributes: smart.attributes.iter().map(|a| AttrExport {
-                    id: a.id,
-                    name: a.name.clone(),
-                    value: a.value,
-                    worst: a.worst,
-                    threshold: a.threshold,
-                    raw: a.raw,
-                }).collect(),
+                attributes: smart
+                    .attributes
+                    .iter()
+                    .map(|a| AttrExport {
+                        id: a.id,
+                        name: a.name.clone(),
+                        value: a.value,
+                        worst: a.worst,
+                        threshold: a.threshold,
+                        raw: a.raw,
+                    })
+                    .collect(),
             }),
-            benchmark: benchmark.as_ref().map(|b| BenchmarkExport { results: b.clone() }),
+            benchmark: benchmark
+                .as_ref()
+                .map(|b| BenchmarkExport { results: b.clone() }),
         });
     }
 
@@ -89,8 +100,12 @@ pub fn export_to_json(path: &PathBuf, disk_data: &Option<DiskInfo>, smart_data: 
     let json = serde_json::to_string_pretty(&export_data)
         .map_err(|e| format!("JSON serialization failed: {}", e))?;
 
-    let mut file = File::create(path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let mut file = File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
 
     file.write_all(json.as_bytes())
         .map_err(|e| format!("Failed to write file: {}", e))?;
@@ -98,50 +113,104 @@ pub fn export_to_json(path: &PathBuf, disk_data: &Option<DiskInfo>, smart_data: 
     Ok(())
 }
 
-pub fn export_to_csv(path: &PathBuf, disk_data: &Option<DiskInfo>, smart_data: &Option<SmartData>, benchmark: &Option<Vec<BenchmarkResult>>) -> Result<(), String> {
-    let mut wtr = csv::Writer::from_path(path)
-        .map_err(|e| format!("Failed to create CSV: {}", e))?;
+pub fn export_to_csv(
+    path: &PathBuf,
+    disk_data: &Option<DiskInfo>,
+    smart_data: &Option<SmartData>,
+    benchmark: &Option<Vec<BenchmarkResult>>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
 
-    wtr.write_record(&["Device", "Model", "Serial", "Size (bytes)", "Media Type", "SMART Health", "Power On Hours", "Temperature", "Reallocated Sectors", "Pending Sectors", "Uncorrectable"])
-        .map_err(|e| format!("CSV write error: {}", e))?;
+    let mut wtr =
+        csv::Writer::from_path(path).map_err(|e| format!("Failed to create CSV: {}", e))?;
 
-    if let (Some(disk), Some(smart)) = (disk_data, smart_data) {
+    wtr.write_record(&[
+        "Device",
+        "Model",
+        "Serial",
+        "Size (bytes)",
+        "Media Type",
+        "SMART Health",
+        "Power On Hours",
+        "Temperature",
+        "Reallocated Sectors",
+        "Pending Sectors",
+        "Uncorrectable",
+    ])
+    .map_err(|e| format!("CSV write error: {}", e))?;
+
+    if let Some(disk) = disk_data {
+        let health = smart_data
+            .as_ref()
+            .map(|s| s.overall_health.clone())
+            .unwrap_or_else(|| "N/A".to_string());
+        let power_on = smart_data
+            .as_ref()
+            .map(|s| s.power_on_hours.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        let temp = smart_data
+            .as_ref()
+            .and_then(|s| s.temperature)
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        let realloc = smart_data
+            .as_ref()
+            .map(|s| s.reallocated_sectors.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        let pending = smart_data
+            .as_ref()
+            .map(|s| s.pending_sectors.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        let uncorrect = smart_data
+            .as_ref()
+            .map(|s| s.uncorrectable_errors.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+
         wtr.write_record(&[
             &disk.device,
             &disk.model,
             &disk.serial,
             &disk.size.to_string(),
             &format!("{:?}", disk.media_type),
-            &smart.overall_health,
-            &smart.power_on_hours.to_string(),
-            &smart.temperature.map(|t| t.to_string()).unwrap_or_else(|| "N/A".to_string()),
-            &smart.reallocated_sectors.to_string(),
-            &smart.pending_sectors.to_string(),
-            &smart.uncorrectable_errors.to_string(),
-        ]).map_err(|e| format!("CSV write error: {}", e))?;
+            &health,
+            &power_on,
+            &temp,
+            &realloc,
+            &pending,
+            &uncorrect,
+        ])
+        .map_err(|e| format!("CSV write error: {}", e))?;
     }
 
     wtr.flush().map_err(|e| format!("CSV flush error: {}", e))?;
-    
+
     if let Some(bench_results) = benchmark {
         let bench_path = path.with_extension("csv");
         let bench_csv = File::create(&bench_path)
             .map_err(|e| format!("Failed to create benchmark CSV: {}", e))?;
-        
+
         let mut bench_wtr = csv::Writer::from_writer(bench_csv);
-        
-        bench_wtr.write_record(&["Block Size (KB)", "Read Speed (MB/s)", "Write Speed (MB/s)"])
+
+        bench_wtr
+            .write_record(&["Block Size (KB)", "Read Speed (MB/s)", "Write Speed (MB/s)"])
             .map_err(|e| format!("CSV write error: {}", e))?;
-        
+
         for result in bench_results {
-            bench_wtr.write_record(&[
-                &result.block_size_kb.to_string(),
-                &format!("{:.2}", result.read_speed_mbps),
-                &format!("{:.2}", result.write_speed_mbps),
-            ]).map_err(|e| format!("CSV write error: {}", e))?;
+            bench_wtr
+                .write_record(&[
+                    &result.block_size_kb.to_string(),
+                    &format!("{:.2}", result.read_speed_mbps),
+                    &format!("{:.2}", result.write_speed_mbps),
+                ])
+                .map_err(|e| format!("CSV write error: {}", e))?;
         }
-        
-        bench_wtr.flush().map_err(|e| format!("CSV flush error: {}", e))?;
+
+        bench_wtr
+            .flush()
+            .map_err(|e| format!("CSV flush error: {}", e))?;
     }
 
     Ok(())
