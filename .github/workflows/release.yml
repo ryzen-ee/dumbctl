@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --strip
+
+      - name: Create tarball
+        run: |
+          tar -czvf dumbctl-${{ github.ref_name }}-linux-x64.tar.gz \
+            -C target/release dumbctl
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dumbctl-*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
