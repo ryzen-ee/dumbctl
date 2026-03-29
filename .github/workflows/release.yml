@@ -19,7 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: RUSTFLAGS="-C strip" cargo build --release
+        run: cargo build --release
 
       - name: Create tarball
         run: |
