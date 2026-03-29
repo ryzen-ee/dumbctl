@@ -1,4 +1,4 @@
-# dumbctl
+<h1 align="center">dumbctl</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust 1.70+">
