@@ -1,19 +1,29 @@
 use crate::ui::{App, ExportFormat};
 use ratatui::{
     layout::{Constraint, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Cell, Gauge, Row, Table},
     Frame,
 };
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
+    let theme_colors = app.settings.theme.colors();
+    let warning_color = theme_colors.warning;
+    let normal_style = Style::default().fg(theme_colors.fg);
+    let border_style = Style::default().fg(theme_colors.border);
+
     if app.selected_disk_index.is_none() {
         f.render_widget(
             ratatui::widgets::Paragraph::new(
                 "No disk selected.\nGo to Disk List tab and select a disk.",
             )
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL).title(" Export "))
+            .style(Style::default().fg(warning_color))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Export ")
+                    .border_style(border_style),
+            )
             .alignment(ratatui::layout::Alignment::Center),
             area,
         );
@@ -44,26 +54,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let rows = vec![
         Row::new(vec![
-            Cell::from("Format:"),
+            Cell::from("Format:").style(normal_style),
             Cell::from(format_label).style(
                 Style::default()
                     .fg(if app.export_format == ExportFormat::Json {
-                        Color::Green
+                        theme_colors.healthy
                     } else {
-                        Color::Cyan
+                        theme_colors.title
                     })
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Cell::from("").style(Style::default().fg(Color::DarkGray)),
+            Cell::from("").style(Style::default().fg(theme_colors.muted)),
         ]),
         Row::new(vec![
-            Cell::from("Include:"),
+            Cell::from("Include:").style(normal_style),
             Cell::from(content_label).style(
                 Style::default()
-                    .fg(Color::LightBlue)
+                    .fg(theme_colors.selected)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Cell::from("↑/↓ to toggle").style(Style::default().fg(Color::DarkGray)),
+            Cell::from("↑/↓ to toggle").style(Style::default().fg(theme_colors.muted)),
         ]),
     ];
 
@@ -78,7 +88,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Export Options "),
+            .title(" Export Options ")
+            .border_style(border_style),
     );
 
     f.render_widget(table, chunks[1]);
@@ -87,10 +98,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ratatui::widgets::Paragraph::new(format!("Selected: {} | {}", disk_name, content_label))
             .style(
                 Style::default()
-                    .fg(Color::LightBlue)
+                    .fg(theme_colors.selected)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             )
-            .block(Block::default().borders(Borders::ALL).title(" Selected "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Selected ")
+                    .border_style(border_style),
+            )
             .alignment(ratatui::layout::Alignment::Center),
         chunks[0],
     );
@@ -108,23 +124,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let action_color = if app.export_running {
-        Color::Yellow
+        theme_colors.warning
     } else if app
         .export_status
         .as_ref()
         .map(|s| s.contains("Exported"))
         .unwrap_or(false)
     {
-        Color::Green
+        theme_colors.healthy
     } else if app
         .export_status
         .as_ref()
         .map(|s| s.contains("failed"))
         .unwrap_or(false)
     {
-        Color::Red
+        theme_colors.critical
     } else {
-        Color::LightGreen
+        theme_colors.healthy
     };
 
     if app.export_running {
@@ -132,9 +148,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Exporting... "),
+                    .title(" Exporting... ")
+                    .border_style(border_style),
             )
-            .gauge_style(Style::default().fg(Color::LightBlue))
+            .gauge_style(Style::default().fg(theme_colors.selected))
             .label(&action_text)
             .ratio(0.5);
 
@@ -147,7 +164,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                         .fg(action_color)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 )
-                .block(Block::default().borders(Borders::ALL).title(" Action "))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Action ")
+                        .border_style(border_style),
+                )
                 .alignment(ratatui::layout::Alignment::Center),
             chunks[2],
         );

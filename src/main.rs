@@ -1,4 +1,5 @@
 mod disk;
+mod settings;
 mod ui;
 mod utils;
 

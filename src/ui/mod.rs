@@ -3,6 +3,7 @@ pub mod tabs;
 
 use crate::disk::benchmark::{Benchmark, BenchmarkResult};
 use crate::disk::{self, DiskInfo, SmartData};
+use crate::settings::Settings;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::{
@@ -22,6 +23,7 @@ pub enum Tab {
     Sectors,
     Benchmark,
     Export,
+    Settings,
 }
 
 impl Tab {
@@ -31,17 +33,19 @@ impl Tab {
             Tab::Smart => Tab::Sectors,
             Tab::Sectors => Tab::Benchmark,
             Tab::Benchmark => Tab::Export,
-            Tab::Export => Tab::Disks,
+            Tab::Export => Tab::Settings,
+            Tab::Settings => Tab::Disks,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Tab::Disks => Tab::Export,
+            Tab::Disks => Tab::Settings,
             Tab::Smart => Tab::Disks,
             Tab::Sectors => Tab::Smart,
             Tab::Benchmark => Tab::Sectors,
             Tab::Export => Tab::Benchmark,
+            Tab::Settings => Tab::Export,
         }
     }
 
@@ -53,6 +57,7 @@ impl Tab {
             Tab::Sectors => "Sectors",
             Tab::Benchmark => "Benchmark",
             Tab::Export => "Export",
+            Tab::Settings => "Settings",
         }
     }
 }
@@ -66,6 +71,7 @@ pub struct App {
     pub disk_list_state: ListState,
     pub export_format: ExportFormat,
     pub export_content: ExportContent,
+    #[allow(dead_code)]
     pub export_path: String,
     pub export_status: Option<String>,
     pub export_status_timestamp: Option<Instant>,
@@ -74,6 +80,19 @@ pub struct App {
     pub message: Option<String>,
     pub message_timestamp: Option<Instant>,
     pub benchmark_results_shared: Option<Arc<Mutex<Option<Vec<BenchmarkResult>>>>>,
+    pub settings: Settings,
+    pub settings_edit_field: SettingsField,
+    pub settings_editing: bool,
+    pub settings_input_buffer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    None,
+    ExportPath,
+    Theme,
+    AutoRefresh,
+    BenchmarkSize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +159,7 @@ impl Default for ListState {
 impl App {
     pub fn new() -> Self {
         let disks = disk::detect_disks();
+        let settings = Settings::load();
 
         Self {
             disks,
@@ -158,6 +178,10 @@ impl App {
             message: None,
             message_timestamp: None,
             benchmark_results_shared: None,
+            settings,
+            settings_edit_field: SettingsField::None,
+            settings_editing: false,
+            settings_input_buffer: String::new(),
         }
     }
 
@@ -176,16 +200,81 @@ impl App {
                 match event::read() {
                     Ok(Event::Key(key)) => {
                         if key.kind == KeyEventKind::Press {
-                            match key.code {
-                                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                                KeyCode::Tab => self.current_tab = self.current_tab.next(),
-                                KeyCode::BackTab => self.current_tab = self.current_tab.prev(),
-                                KeyCode::Char('r') => self.refresh(),
-                                KeyCode::Char('e') => self.current_tab = Tab::Export,
-                                KeyCode::Up => self.handle_up(),
-                                KeyCode::Down => self.handle_down(),
-                                KeyCode::Enter => self.handle_enter(),
-                                _ => self.handle_key(key.code),
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                match key.code {
+                                    KeyCode::Char('s') => {
+                                        if self.current_tab == Tab::Settings {
+                                            self.save_settings();
+                                        }
+                                    }
+                                    KeyCode::Char('r') => {
+                                        if self.current_tab == Tab::Settings {
+                                            self.reset_settings();
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                let settings_editing =
+                                    self.current_tab == Tab::Settings && self.settings_editing;
+
+                                match key.code {
+                                    KeyCode::Char('q') => return Ok(()),
+                                    KeyCode::Esc => {
+                                        if self.current_tab == Tab::Settings
+                                            && self.settings_editing
+                                        {
+                                            self.settings_editing = false;
+                                            self.settings_input_buffer.clear();
+                                        } else if self.current_tab == Tab::Settings {
+                                            self.settings_edit_field = SettingsField::None;
+                                        } else {
+                                            return Ok(());
+                                        }
+                                    }
+                                    KeyCode::Tab if !settings_editing => {
+                                        self.current_tab = self.current_tab.next()
+                                    }
+                                    KeyCode::BackTab if !settings_editing => {
+                                        self.current_tab = self.current_tab.prev()
+                                    }
+                                    KeyCode::Char('r') if !settings_editing => self.refresh(),
+                                    KeyCode::Char('e') if !settings_editing => {
+                                        self.current_tab = Tab::Export
+                                    }
+                                    KeyCode::Char('s') if self.current_tab == Tab::Benchmark => {
+                                        self.start_benchmark();
+                                    }
+                                    KeyCode::Up if !settings_editing => self.handle_up(),
+                                    KeyCode::Down if !settings_editing => self.handle_down(),
+                                    KeyCode::Enter => self.handle_enter(),
+                                    KeyCode::Char(' ')
+                                        if self.current_tab == Tab::Settings
+                                            && !settings_editing =>
+                                    {
+                                        self.cycle_setting();
+                                    }
+                                    KeyCode::Char(c)
+                                        if self.current_tab == Tab::Settings
+                                            && self.settings_editing
+                                            && self.settings_edit_field
+                                                == SettingsField::ExportPath =>
+                                    {
+                                        self.settings_input_buffer.push(c);
+                                    }
+                                    KeyCode::Backspace
+                                        if self.current_tab == Tab::Settings
+                                            && self.settings_editing
+                                            && self.settings_edit_field
+                                                == SettingsField::ExportPath =>
+                                    {
+                                        self.settings_input_buffer.pop();
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                     }
@@ -230,6 +319,15 @@ impl App {
             Tab::Export => {
                 self.toggle_export_prev();
             }
+            Tab::Settings => {
+                self.settings_edit_field = match self.settings_edit_field {
+                    SettingsField::None => SettingsField::BenchmarkSize,
+                    SettingsField::ExportPath => SettingsField::BenchmarkSize,
+                    SettingsField::Theme => SettingsField::ExportPath,
+                    SettingsField::AutoRefresh => SettingsField::Theme,
+                    SettingsField::BenchmarkSize => SettingsField::AutoRefresh,
+                };
+            }
             _ => {}
         }
     }
@@ -249,6 +347,15 @@ impl App {
             }
             Tab::Export => {
                 self.toggle_export_next();
+            }
+            Tab::Settings => {
+                self.settings_edit_field = match self.settings_edit_field {
+                    SettingsField::None => SettingsField::ExportPath,
+                    SettingsField::ExportPath => SettingsField::Theme,
+                    SettingsField::Theme => SettingsField::AutoRefresh,
+                    SettingsField::AutoRefresh => SettingsField::BenchmarkSize,
+                    SettingsField::BenchmarkSize => SettingsField::ExportPath,
+                };
             }
             _ => {}
         }
@@ -318,17 +425,73 @@ impl App {
             Tab::Export => {
                 self.do_export();
             }
+            Tab::Settings => {
+                if self.settings_edit_field == SettingsField::None {
+                    self.settings_edit_field = SettingsField::ExportPath;
+                    self.settings_editing = true;
+                    self.settings_input_buffer = self.settings.export_path.clone();
+                } else if self.settings_edit_field == SettingsField::ExportPath {
+                    if self.settings_editing {
+                        self.settings.export_path = self.settings_input_buffer.clone();
+                        self.settings_editing = false;
+                    } else {
+                        self.settings_editing = true;
+                        self.settings_input_buffer = self.settings.export_path.clone();
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    fn handle_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('s') if self.current_tab == Tab::Benchmark => {
-                self.start_benchmark();
+    fn cycle_setting(&mut self) {
+        match self.settings_edit_field {
+            SettingsField::Theme => {
+                self.settings.theme = self.settings.theme.next();
+            }
+            SettingsField::AutoRefresh => {
+                self.settings.auto_refresh_interval = match self.settings.auto_refresh_interval {
+                    0 => 30,
+                    30 => 60,
+                    60 => 120,
+                    120 => 300,
+                    300 => 0,
+                    _ => 0,
+                };
+            }
+            SettingsField::BenchmarkSize => {
+                self.settings.benchmark_size_mb = match self.settings.benchmark_size_mb {
+                    128 => 256,
+                    256 => 512,
+                    512 => 1024,
+                    1024 => 2048,
+                    2048 => 128,
+                    _ => 512,
+                };
             }
             _ => {}
         }
+    }
+
+    fn save_settings(&mut self) {
+        match self.settings.save() {
+            Ok(_) => {
+                self.message = Some("Settings saved".to_string());
+            }
+            Err(e) => {
+                self.message = Some(format!("Failed to save: {}", e));
+            }
+        }
+        self.message_timestamp = Some(Instant::now());
+    }
+
+    fn reset_settings(&mut self) {
+        self.settings = Settings::default();
+        self.settings_edit_field = SettingsField::None;
+        self.settings_editing = false;
+        self.settings_input_buffer.clear();
+        self.message = Some("Settings reset to default".to_string());
+        self.message_timestamp = Some(Instant::now());
     }
 
     fn refresh(&mut self) {
@@ -432,7 +595,7 @@ impl App {
             ExportContent::SmartOnly => None,
         };
 
-        let path = if self.export_path.is_empty() {
+        let path = if self.settings.export_path.is_empty() {
             let home = if let Ok(sudo_user) = std::env::var("SUDO_USER") {
                 if let Some(home) = dirs::home_dir() {
                     let home_str = home.to_string_lossy().to_string();
@@ -460,7 +623,7 @@ impl App {
             };
             home.join(format!("dumbctl_export{}{}.", suffix, ext))
         } else {
-            PathBuf::from(&self.export_path)
+            PathBuf::from(&self.settings.export_path)
         };
 
         let result = match self.export_format {
@@ -481,6 +644,8 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
+        let theme_colors = self.settings.theme.colors();
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -490,12 +655,21 @@ impl App {
             ])
             .split(f.size());
 
+        f.render_widget(ratatui::widgets::Clear, f.size());
+
+        f.render_widget(
+            ratatui::widgets::Block::default()
+                .style(ratatui::style::Style::default().bg(theme_colors.bg)),
+            f.size(),
+        );
+
         self.draw_tabs(f, chunks[0]);
         self.draw_content(f, chunks[1]);
         self.draw_status(f, chunks[2]);
     }
 
     fn draw_tabs(&self, f: &mut Frame, area: Rect) {
+        let theme_colors = self.settings.theme.colors();
         let tabs_width = 75;
         let start_x = (area.width.saturating_sub(tabs_width)) / 2;
         let start_y = (area.height.saturating_sub(1)) / 2;
@@ -515,6 +689,7 @@ impl App {
                 Constraint::Length(14),
                 Constraint::Length(14),
                 Constraint::Length(14),
+                Constraint::Length(14),
             ])
             .split(tabs_area);
 
@@ -524,17 +699,28 @@ impl App {
             (Tab::Sectors, " Sectors "),
             (Tab::Benchmark, " Benchmark "),
             (Tab::Export, " Export "),
+            (Tab::Settings, " Settings "),
         ];
 
         for (i, (tab, title)) in tabs.iter().enumerate() {
             let is_active = self.current_tab == *tab;
             let style = if is_active {
+                let selected_fg = match theme_colors.selected {
+                    ratatui::style::Color::White
+                    | ratatui::style::Color::LightBlue
+                    | ratatui::style::Color::LightGreen
+                    | ratatui::style::Color::LightCyan
+                    | ratatui::style::Color::Blue
+                    | ratatui::style::Color::Cyan
+                    | ratatui::style::Color::Green => ratatui::style::Color::Black,
+                    _ => ratatui::style::Color::White,
+                };
                 ratatui::style::Style::default()
-                    .bg(ratatui::style::Color::LightGreen)
-                    .fg(ratatui::style::Color::Black)
+                    .bg(theme_colors.selected)
+                    .fg(selected_fg)
                     .add_modifier(ratatui::style::Modifier::BOLD)
             } else {
-                ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray)
+                ratatui::style::Style::default().fg(theme_colors.fg)
             };
 
             f.render_widget(
@@ -553,20 +739,32 @@ impl App {
             Tab::Sectors => tabs::sectors::render(f, area, self),
             Tab::Benchmark => tabs::benchmark::render(f, area, self),
             Tab::Export => tabs::export::render(f, area, self),
+            Tab::Settings => tabs::settings::render(f, area, self),
         }
     }
 
     fn draw_status(&self, f: &mut Frame, area: Rect) {
+        let theme_colors = self.settings.theme.colors();
+
+        let is_editing = self.current_tab == Tab::Settings && self.settings_editing;
+
+        let default_text = if is_editing {
+            "EDITING: Type path | Enter: confirm | Esc: cancel"
+        } else if self.current_tab == Tab::Settings {
+            "Tab: switch | ↑/↓: navigate | Enter: edit path | Space: cycle | Ctrl+S: save | Ctrl+R: reset | Esc: cancel"
+        } else {
+            "Tab: switch | ↑/↓: navigate | Enter: select | r: refresh | s: benchmark | q: quit"
+        };
+
         let text = if let Some(msg) = &self.message {
             msg.clone()
         } else if let Some(status) = &self.export_status {
             status.clone()
         } else {
-            "Tab: switch | ↑/↓: navigate | Enter: select | r: refresh | s: benchmark | q: quit"
-                .to_string()
+            default_text.to_string()
         };
 
-        let version = "dumbctl - v0.1.000";
+        let version = "dumbctl - v0.1.100";
         let version_width = version.len() as u16;
         let status_width = area.width.saturating_sub(version_width + 1);
 
@@ -580,12 +778,12 @@ impl App {
 
         f.render_widget(
             ratatui::widgets::Paragraph::new(text)
-                .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray)),
+                .style(ratatui::style::Style::default().fg(theme_colors.fg)),
             chunks[0],
         );
         f.render_widget(
             ratatui::widgets::Paragraph::new(version)
-                .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray)),
+                .style(ratatui::style::Style::default().fg(theme_colors.fg)),
             chunks[1],
         );
     }

@@ -62,9 +62,13 @@ sudo ./dumbctl
 |:---:|--------|
 | `Tab` | Switch between tabs |
 | `↑` `↓` | Navigate lists |
-| `Enter` | Select disk |
+| `Enter` | Select disk / Edit setting |
+| `Space` | Cycle setting options (Settings tab) |
 | `r` | Refresh SMART data |
 | `s` | Start benchmark |
+| `Ctrl+S` | Save settings (Settings tab) |
+| `Ctrl+R` | Reset settings (Settings tab) |
+| `Esc` | Cancel editing / Quit from settings |
 | `q` | Quit |
 
 ### Tabs Overview
@@ -76,6 +80,7 @@ sudo ./dumbctl
 | **Sectors** | Sector health overview with progress bar |
 | **Benchmark** | Run disk speed tests |
 | **Export** | Export data to JSON/CSV |
+| **Settings** | Configure export path, theme, auto-refresh, benchmark size |
 
 ---
 

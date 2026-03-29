@@ -1,7 +1,7 @@
 use crate::ui::App;
 use ratatui::{
     layout::{Constraint, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Cell, Gauge, Row, Table},
     Frame,
 };
@@ -16,13 +16,25 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
+    let theme_colors = app.settings.theme.colors();
+    let warning_color = theme_colors.warning;
+    let healthy_color = theme_colors.healthy;
+    let critical_color = theme_colors.critical;
+    let title_color = theme_colors.title;
+    let normal_style = Style::default().fg(theme_colors.fg);
+
     if app.selected_disk_index.is_none() {
         f.render_widget(
             ratatui::widgets::Paragraph::new(
                 "No disk selected.\nGo to Disk List tab and select a disk.",
             )
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL).title(" Sectors "))
+            .style(Style::default().fg(warning_color))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Sectors ")
+                    .border_style(Style::default().fg(theme_colors.border)),
+            )
             .alignment(ratatui::layout::Alignment::Center),
             area,
         );
@@ -32,8 +44,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let Some(smart) = &app.smart_data else {
         f.render_widget(
             ratatui::widgets::Paragraph::new("No SMART data available.\nGo to SMART tab first.")
-                .style(Style::default().fg(Color::Yellow))
-                .block(Block::default().borders(Borders::ALL).title(" Sectors "))
+                .style(Style::default().fg(warning_color))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Sectors ")
+                        .border_style(Style::default().fg(theme_colors.border)),
+                )
                 .alignment(ratatui::layout::Alignment::Center),
             area,
         );
@@ -48,8 +65,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ratatui::widgets::Paragraph::new(
                 "SMART data requires root access.\nRun with: sudo ./dumbctl",
             )
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL).title(" Sectors "))
+            .style(Style::default().fg(warning_color))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Sectors ")
+                    .border_style(Style::default().fg(theme_colors.border)),
+            )
             .alignment(ratatui::layout::Alignment::Center),
             area,
         );
@@ -111,13 +133,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ))
         .style(
             Style::default()
-                .fg(Color::LightBlue)
+                .fg(title_color)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Sector Overview "),
+                .title(" Sector Overview ")
+                .border_style(Style::default().fg(theme_colors.border)),
         )
         .alignment(ratatui::layout::Alignment::Center),
         chunks[0],
@@ -125,71 +148,72 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let rows = vec![
         Row::new(vec![
-            Cell::from("Status"),
-            Cell::from("Sectors"),
-            Cell::from("Size"),
-            Cell::from("Description"),
+            Cell::from("Status").style(normal_style),
+            Cell::from("Sectors").style(normal_style),
+            Cell::from("Size").style(normal_style),
+            Cell::from("Description").style(normal_style),
         ])
         .style(
             Style::default()
-                .fg(Color::LightBlue)
+                .fg(title_color)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
         Row::new(vec![
-            Cell::from("Good"),
-            Cell::from(good_sectors.to_string()).style(Style::default().fg(Color::Green)),
-            Cell::from(format_bytes(good_bytes)),
-            Cell::from("Healthy sectors"),
+            Cell::from("Good").style(normal_style),
+            Cell::from(good_sectors.to_string()).style(Style::default().fg(healthy_color)),
+            Cell::from(format_bytes(good_bytes)).style(normal_style),
+            Cell::from("Healthy sectors").style(normal_style),
         ]),
         Row::new(vec![
-            Cell::from("Reallocated"),
+            Cell::from("Reallocated").style(normal_style),
             Cell::from(reallocated.to_string()).style(Style::default().fg(if reallocated > 0 {
-                Color::Red
+                critical_color
             } else {
-                Color::Green
+                healthy_color
             })),
-            Cell::from(format_bytes(reallocated_bytes)),
-            Cell::from("Bad sectors remapped"),
+            Cell::from(format_bytes(reallocated_bytes)).style(normal_style),
+            Cell::from("Bad sectors remapped").style(normal_style),
         ]),
         Row::new(vec![
-            Cell::from("Pending"),
+            Cell::from("Pending").style(normal_style),
             Cell::from(pending.to_string()).style(Style::default().fg(if pending > 0 {
-                Color::Yellow
+                warning_color
             } else {
-                Color::Green
+                healthy_color
             })),
-            Cell::from(format_bytes(pending_bytes)),
-            Cell::from("Sectors waiting to be remapped"),
+            Cell::from(format_bytes(pending_bytes)).style(normal_style),
+            Cell::from("Sectors waiting to be remapped").style(normal_style),
         ]),
         Row::new(vec![
-            Cell::from("Uncorrectable"),
+            Cell::from("Uncorrectable").style(normal_style),
             Cell::from(uncorrectable.to_string()).style(Style::default().fg(
                 if uncorrectable > 0 {
-                    Color::Red
+                    critical_color
                 } else {
-                    Color::Green
+                    healthy_color
                 },
             )),
-            Cell::from(format_bytes(uncorrectable_bytes)),
-            Cell::from("Read errors - could not recover"),
+            Cell::from(format_bytes(uncorrectable_bytes)).style(normal_style),
+            Cell::from("Read errors - could not recover").style(normal_style),
         ]),
         Row::new(vec![
-            Cell::from("Total Bad"),
+            Cell::from("Total Bad").style(normal_style),
             Cell::from(total_bad.to_string()).style(
                 Style::default()
                     .fg(if total_bad > 0 {
-                        Color::Red
+                        critical_color
                     } else {
-                        Color::Green
+                        healthy_color
                     })
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Cell::from(format_bytes(total_bad * sector_size)),
+            Cell::from(format_bytes(total_bad * sector_size)).style(normal_style),
             Cell::from(if total_bad == 0 {
                 "Disk is healthy"
             } else {
                 "Warning: Bad sectors detected"
-            }),
+            })
+            .style(normal_style),
         ]),
     ];
 
@@ -205,7 +229,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Sector Details "),
+            .title(" Sector Details ")
+            .border_style(Style::default().fg(theme_colors.border)),
     );
 
     f.render_widget(table, chunks[1]);
@@ -216,20 +241,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Disk Health "),
+                .title(" Disk Health ")
+                .border_style(Style::default().fg(theme_colors.border)),
         )
-        .gauge_style(Style::default().fg(Color::Green))
+        .gauge_style(Style::default().fg(healthy_color))
         .label(bar_label)
         .ratio(good_pct / 100.0);
 
     f.render_widget(gauge, chunks[2]);
 
     let health_status = if total_bad == 0 {
-        ("Excellent".to_string(), Color::Green)
+        ("Excellent".to_string(), healthy_color)
     } else if total_bad < 10 {
-        ("Warning".to_string(), Color::Yellow)
+        ("Warning".to_string(), warning_color)
     } else {
-        ("Critical".to_string(), Color::Red)
+        ("Critical".to_string(), critical_color)
     };
 
     let recommendation = if total_bad == 0 {
@@ -248,7 +274,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Recommendation "),
+                    .title(" Recommendation ")
+                    .border_style(Style::default().fg(theme_colors.border)),
             )
             .alignment(ratatui::layout::Alignment::Center),
         chunks[3],

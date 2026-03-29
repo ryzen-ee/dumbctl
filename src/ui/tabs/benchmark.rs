@@ -1,19 +1,32 @@
 use crate::ui::App;
 use ratatui::{
     layout::{Constraint, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Cell, Row, Table},
     Frame,
 };
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
+    let theme_colors = app.settings.theme.colors();
+    let warning_color = theme_colors.warning;
+    let healthy_color = theme_colors.healthy;
+    let title_color = theme_colors.title;
+    let normal_style = Style::default().fg(theme_colors.fg);
+
+    let border_style = Style::default().fg(theme_colors.border);
+
     if app.selected_disk_index.is_none() {
         f.render_widget(
             ratatui::widgets::Paragraph::new(
                 "No disk selected. Go to Disk List tab and select a disk.",
             )
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL).title(" Benchmark "))
+            .style(Style::default().fg(warning_color))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Benchmark ")
+                    .border_style(border_style),
+            )
             .alignment(ratatui::layout::Alignment::Center),
             area,
         );
@@ -36,10 +49,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ratatui::widgets::Paragraph::new(instruction)
             .style(
                 Style::default()
-                    .fg(Color::LightBlue)
+                    .fg(title_color)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             )
-            .block(Block::default().borders(Borders::ALL).title(" Benchmark "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Benchmark ")
+                    .border_style(border_style),
+            )
             .alignment(ratatui::layout::Alignment::Center),
         chunks[0],
     );
@@ -49,10 +67,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ratatui::widgets::Paragraph::new("Running benchmark... please wait...")
                 .style(
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(warning_color)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 )
-                .block(Block::default().borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
                 .alignment(ratatui::layout::Alignment::Center),
             chunks[1],
         );
@@ -63,8 +85,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         if results.is_empty() {
             f.render_widget(
                 ratatui::widgets::Paragraph::new("No benchmark results. Press 's' to start.")
-                    .style(Style::default().fg(Color::DarkGray))
-                    .block(Block::default().borders(Borders::ALL))
+                    .style(Style::default().fg(theme_colors.muted))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(border_style),
+                    )
                     .alignment(ratatui::layout::Alignment::Center),
                 chunks[1],
             );
@@ -77,9 +103,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 let read_speed = format!("{:.2}", r.read_speed_mbps);
                 let write_speed = format!("{:.2}", r.write_speed_mbps);
                 Row::new(vec![
-                    Cell::from(r.block_size_kb.to_string()),
-                    Cell::from(read_speed).style(Style::default().fg(Color::Cyan)),
-                    Cell::from(write_speed).style(Style::default().fg(Color::Green)),
+                    Cell::from(r.block_size_kb.to_string()).style(normal_style),
+                    Cell::from(read_speed).style(Style::default().fg(title_color)),
+                    Cell::from(write_speed).style(Style::default().fg(healthy_color)),
                 ])
             })
             .collect();
@@ -92,16 +118,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 Constraint::Length(20),
             ],
         )
-        .block(Block::default().borders(Borders::ALL).title(" Results "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Results ")
+                .border_style(border_style),
+        )
         .header(
             Row::new(vec![
-                Cell::from("Block Size"),
-                Cell::from("Read (MB/s)"),
-                Cell::from("Write (MB/s)"),
+                Cell::from("Block Size").style(normal_style),
+                Cell::from("Read (MB/s)").style(normal_style),
+                Cell::from("Write (MB/s)").style(normal_style),
             ])
             .style(
                 Style::default()
-                    .fg(Color::LightBlue)
+                    .fg(title_color)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
         );
@@ -110,8 +141,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     } else {
         f.render_widget(
             ratatui::widgets::Paragraph::new("Press 's' to start benchmark")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default().fg(theme_colors.muted))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
                 .alignment(ratatui::layout::Alignment::Center),
             chunks[1],
         );
