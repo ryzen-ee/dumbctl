@@ -1,6 +1,7 @@
 <h1 align="center">dumbctl</h1>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/version-v0.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust 1.70+">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/platform-linux-lightgrey.svg" alt="Platform: Linux">
