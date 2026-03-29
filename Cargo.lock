@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "dumbctl"
-version = "0.1.102"
+version = "0.2.105"
 dependencies = [
  "chrono",
  "crossterm",

@@ -44,7 +44,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         .map(|d| d.device.as_str())
         .unwrap_or("Unknown");
 
-    let instruction = format!("Selected: {} | Press 's' to start benchmark", disk_name);
+    let instruction = format!("Selected: {} | 's': start | 'b': background", disk_name);
     f.render_widget(
         ratatui::widgets::Paragraph::new(instruction)
             .style(
@@ -63,20 +63,41 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     );
 
     if app.benchmark_running {
+        let progress = app.benchmark_progress.as_ref();
+        let phase = progress.map(|p| p.phase.as_str()).unwrap_or("Running...");
+        let percent = progress.map(|p| p.percent).unwrap_or(0);
+
+        let progress_bar = ratatui::widgets::Gauge::default()
+            .gauge_style(Style::default().fg(warning_color).bg(theme_colors.muted))
+            .percent(percent as u16);
+
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(chunks[1]);
+
         f.render_widget(
-            ratatui::widgets::Paragraph::new("Running benchmark... please wait...")
+            ratatui::widgets::Paragraph::new(format!("Running benchmark... {}%", percent))
                 .style(
                     Style::default()
                         .fg(warning_color)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 )
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(border_style),
-                )
                 .alignment(ratatui::layout::Alignment::Center),
-            chunks[1],
+            chunks[0],
+        );
+
+        f.render_widget(progress_bar, chunks[1]);
+
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(phase)
+                .style(Style::default().fg(theme_colors.fg))
+                .alignment(ratatui::layout::Alignment::Center),
+            chunks[2],
         );
         return;
     }

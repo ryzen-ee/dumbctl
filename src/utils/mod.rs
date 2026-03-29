@@ -110,6 +110,16 @@ pub fn export_to_json(
     file.write_all(json.as_bytes())
         .map_err(|e| format!("Failed to write file: {}", e))?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o644);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+
     Ok(())
 }
 
@@ -187,6 +197,16 @@ pub fn export_to_csv(
 
     wtr.flush().map_err(|e| format!("CSV flush error: {}", e))?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o644);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+
     if let Some(bench_results) = benchmark {
         let bench_path = path.with_extension("csv");
         let bench_csv = File::create(&bench_path)
@@ -211,6 +231,138 @@ pub fn export_to_csv(
         bench_wtr
             .flush()
             .map_err(|e| format!("CSV flush error: {}", e))?;
+    }
+
+    Ok(())
+}
+
+pub fn export_to_html(
+    path: &PathBuf,
+    disk_data: &Option<DiskInfo>,
+    smart_data: &Option<SmartData>,
+    benchmark: &Option<Vec<BenchmarkResult>>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let export_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let mut html = String::new();
+    html.push_str(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disk Report</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 10px; }
+        .info-label { font-weight: bold; color: #666; }
+        .healthy { color: #22c55e; }
+        .warning { color: #f59e0b; }
+        .critical { color: #ef4444; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f9f9f9; font-weight: 600; }
+        .benchmark-read { color: #3b82f6; }
+        .benchmark-write { color: #8b5cf6; }
+    </style>
+</head>
+<body>
+    <h1>Disk Report</h1>
+    <p>Generated: "#);
+    html.push_str(&export_time);
+    html.push_str("</p>\n");
+
+    if let Some(disk) = disk_data {
+        html.push_str("    <div class=\"card\">\n        <h2>Disk Information</h2>\n        <div class=\"info-grid\">\n");
+
+        let size_gb = disk.size / (1024 * 1024 * 1024);
+        let media_type = format!("{:?}", disk.media_type);
+
+        html.push_str(&format!(
+            "                <span class=\"info-label\">Device:</span><span>{}</span>\n",
+            disk.device
+        ));
+        html.push_str(&format!(
+            "                <span class=\"info-label\">Model:</span><span>{}</span>\n",
+            disk.model.trim()
+        ));
+        html.push_str(&format!(
+            "                <span class=\"info-label\">Serial:</span><span>{}</span>\n",
+            disk.serial
+        ));
+        html.push_str(&format!(
+            "                <span class=\"info-label\">Size:</span><span>{} GB</span>\n",
+            size_gb
+        ));
+        html.push_str(&format!(
+            "                <span class=\"info-label\">Type:</span><span>{}</span>\n",
+            media_type
+        ));
+
+        html.push_str("        </div>\n    </div>\n");
+
+        if let Some(smart) = smart_data {
+            let health_class = match smart.overall_health.as_str() {
+                "PASSED" | "OK" | "Healthy" => "healthy",
+                _ => "critical",
+            };
+
+            html.push_str("    <div class=\"card\">\n        <h2>SMART Status</h2>\n        <div class=\"info-grid\">\n");
+            html.push_str(&format!("                <span class=\"info-label\">Health:</span><span class=\"{}\">{}</span>\n", health_class, smart.overall_health));
+
+            if let Some(temp) = smart.temperature {
+                html.push_str(&format!("                <span class=\"info-label\">Temperature:</span><span>{}°C</span>\n", temp));
+            }
+
+            html.push_str(&format!("                <span class=\"info-label\">Power On:</span><span>{} hours</span>\n", smart.power_on_hours));
+            html.push_str(&format!("                <span class=\"info-label\">Reallocated:</span><span>{} sectors</span>\n", smart.reallocated_sectors));
+            html.push_str(&format!("                <span class=\"info-label\">Pending:</span><span>{} sectors</span>\n", smart.pending_sectors));
+            html.push_str(&format!("                <span class=\"info-label\">Uncorrectable:</span><span>{} errors</span>\n", smart.uncorrectable_errors));
+
+            html.push_str("        </div>\n    </div>\n");
+
+            if !smart.attributes.is_empty() {
+                html.push_str("    <div class=\"card\">\n        <h2>SMART Attributes</h2>\n        <table>\n            <tr><th>ID</th><th>Name</th><th>Value</th><th>Worst</th><th>Threshold</th><th>Raw</th></tr>\n");
+                for attr in &smart.attributes {
+                    html.push_str(&format!(
+                        "            <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                        attr.id, attr.name, attr.value, attr.worst, attr.threshold, attr.raw
+                    ));
+                }
+                html.push_str("        </table>\n    </div>\n");
+            }
+        }
+
+        if let Some(results) = benchmark {
+            html.push_str("    <div class=\"card\">\n        <h2>Benchmark Results</h2>\n        <table>\n            <tr><th>Block Size (KB)</th><th>Read (MB/s)</th><th>Write (MB/s)</th></tr>\n");
+            for result in results {
+                html.push_str(&format!(
+                    "            <tr><td>{}</td><td class=\"benchmark-read\">{:.2}</td><td class=\"benchmark-write\">{:.2}</td></tr>\n",
+                    result.block_size_kb, result.read_speed_mbps, result.write_speed_mbps
+                ));
+            }
+            html.push_str("        </table>\n    </div>\n");
+        }
+    }
+
+    html.push_str("</body>\n</html>\n");
+
+    std::fs::write(path, html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map(|m| m.permissions())
+            .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o644));
+        perms.set_mode(0o644);
+        std::fs::set_permissions(path, perms).ok();
     }
 
     Ok(())

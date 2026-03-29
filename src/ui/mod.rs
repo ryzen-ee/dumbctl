@@ -1,7 +1,7 @@
 pub mod components;
 pub mod tabs;
 
-use crate::disk::benchmark::{Benchmark, BenchmarkResult};
+use crate::disk::benchmark::{Benchmark, BenchmarkProgress, BenchmarkResult};
 use crate::disk::{self, DiskInfo, SmartData};
 use crate::settings::Settings;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -12,6 +12,7 @@ use ratatui::{
 };
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -77,13 +78,19 @@ pub struct App {
     pub export_status_timestamp: Option<Instant>,
     pub export_running: bool,
     pub benchmark_running: bool,
+    pub benchmark_background: bool,
+    pub benchmark_progress: Option<BenchmarkProgress>,
     pub message: Option<String>,
     pub message_timestamp: Option<Instant>,
     pub benchmark_results_shared: Option<Arc<Mutex<Option<Vec<BenchmarkResult>>>>>,
+    pub benchmark_progress_shared: Option<Arc<AtomicU32>>,
+    pub benchmark_phase_shared: Option<Arc<std::sync::Mutex<String>>>,
     pub settings: Settings,
     pub settings_edit_field: SettingsField,
     pub settings_editing: bool,
     pub settings_input_buffer: String,
+    pub search_query: String,
+    pub search_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +106,7 @@ pub enum SettingsField {
 pub enum ExportFormat {
     Json,
     Csv,
+    Html,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,13 +183,19 @@ impl App {
             export_status_timestamp: None,
             export_running: false,
             benchmark_running: false,
+            benchmark_background: false,
+            benchmark_progress: None,
             message: None,
             message_timestamp: None,
             benchmark_results_shared: None,
+            benchmark_progress_shared: None,
+            benchmark_phase_shared: None,
             settings,
             settings_edit_field: SettingsField::None,
             settings_editing: false,
             settings_input_buffer: String::new(),
+            search_query: String::new(),
+            search_active: false,
         }
     }
 
@@ -248,12 +262,43 @@ impl App {
                                     KeyCode::BackTab if !settings_editing => {
                                         self.current_tab = self.current_tab.prev()
                                     }
+                                    KeyCode::Char('/')
+                                        if self.current_tab == Tab::Disks && !settings_editing =>
+                                    {
+                                        self.search_active = !self.search_active;
+                                        if !self.search_active {
+                                            self.search_query.clear();
+                                        }
+                                    }
+                                    KeyCode::Char('1')
+                                        if self.current_tab == Tab::Disks && !settings_editing =>
+                                    {
+                                        crate::ui::tabs::disks::toggle_sort(0);
+                                    }
+                                    KeyCode::Char('2')
+                                        if self.current_tab == Tab::Disks && !settings_editing =>
+                                    {
+                                        crate::ui::tabs::disks::toggle_sort(1);
+                                    }
+                                    KeyCode::Char('3')
+                                        if self.current_tab == Tab::Disks && !settings_editing =>
+                                    {
+                                        crate::ui::tabs::disks::toggle_sort(2);
+                                    }
+                                    KeyCode::Char('4')
+                                        if self.current_tab == Tab::Disks && !settings_editing =>
+                                    {
+                                        crate::ui::tabs::disks::toggle_sort(3);
+                                    }
                                     KeyCode::Char('r') if !settings_editing => self.refresh(),
                                     KeyCode::Char('e') if !settings_editing => {
                                         self.current_tab = Tab::Export
                                     }
                                     KeyCode::Char('s') if self.current_tab == Tab::Benchmark => {
                                         self.start_benchmark();
+                                    }
+                                    KeyCode::Char('b') if self.current_tab == Tab::Benchmark => {
+                                        self.start_background_benchmark();
                                     }
                                     KeyCode::Up if !settings_editing => self.handle_up(),
                                     KeyCode::Down if !settings_editing => self.handle_down(),
@@ -272,6 +317,9 @@ impl App {
                                     {
                                         self.settings_input_buffer.push(c);
                                     }
+                                    KeyCode::Char(c) if self.search_active => {
+                                        self.search_query.push(c);
+                                    }
                                     KeyCode::Backspace
                                         if self.current_tab == Tab::Settings
                                             && self.settings_editing
@@ -279,6 +327,9 @@ impl App {
                                                 == SettingsField::ExportPath =>
                                     {
                                         self.settings_input_buffer.pop();
+                                    }
+                                    KeyCode::Backspace if self.search_active => {
+                                        self.search_query.pop();
                                     }
                                     _ => {}
                                 }
@@ -369,7 +420,7 @@ impl App {
     }
 
     fn toggle_export_next(&mut self) {
-        // Cycle: JSON+SMART -> JSON+Benchmark -> JSON+Both -> CSV+SMART -> CSV+Benchmark -> CSV+Both -> back
+        // Cycle: JSON+SMART -> JSON+Benchmark -> JSON+Both -> CSV+SMART -> CSV+Benchmark -> CSV+Both -> HTML+SMART -> HTML+Benchmark -> HTML+Both -> back
         match (self.export_format, self.export_content) {
             (ExportFormat::Json, ExportContent::SmartOnly) => {
                 self.export_content = ExportContent::BenchmarkOnly
@@ -388,6 +439,16 @@ impl App {
                 self.export_content = ExportContent::Both;
             }
             (ExportFormat::Csv, ExportContent::Both) => {
+                self.export_format = ExportFormat::Html;
+                self.export_content = ExportContent::SmartOnly;
+            }
+            (ExportFormat::Html, ExportContent::SmartOnly) => {
+                self.export_content = ExportContent::BenchmarkOnly
+            }
+            (ExportFormat::Html, ExportContent::BenchmarkOnly) => {
+                self.export_content = ExportContent::Both;
+            }
+            (ExportFormat::Html, ExportContent::Both) => {
                 self.export_format = ExportFormat::Json;
                 self.export_content = ExportContent::SmartOnly;
             }
@@ -397,7 +458,7 @@ impl App {
     fn toggle_export_prev(&mut self) {
         match (self.export_format, self.export_content) {
             (ExportFormat::Json, ExportContent::SmartOnly) => {
-                self.export_format = ExportFormat::Csv;
+                self.export_format = ExportFormat::Html;
                 self.export_content = ExportContent::Both;
             }
             (ExportFormat::Json, ExportContent::BenchmarkOnly) => {
@@ -414,6 +475,16 @@ impl App {
                 self.export_content = ExportContent::SmartOnly;
             }
             (ExportFormat::Csv, ExportContent::Both) => {
+                self.export_content = ExportContent::BenchmarkOnly;
+            }
+            (ExportFormat::Html, ExportContent::SmartOnly) => {
+                self.export_format = ExportFormat::Csv;
+                self.export_content = ExportContent::Both;
+            }
+            (ExportFormat::Html, ExportContent::BenchmarkOnly) => {
+                self.export_content = ExportContent::SmartOnly;
+            }
+            (ExportFormat::Html, ExportContent::Both) => {
                 self.export_content = ExportContent::BenchmarkOnly;
             }
         }
@@ -534,18 +605,79 @@ impl App {
             let device = self.disks[idx].device.clone();
             self.benchmark_running = true;
             self.benchmark_results = None;
+            self.benchmark_progress = Some(BenchmarkProgress {
+                current_block: 0,
+                total_blocks: 6,
+                phase: "Initializing...".to_string(),
+                percent: 0,
+            });
 
             let shared = Arc::new(Mutex::new(None::<Vec<BenchmarkResult>>));
             let shared_clone = shared.clone();
 
+            let progress = Arc::new(AtomicU32::new(0));
+            let progress_clone = progress.clone();
+
+            let phase = Arc::new(Mutex::new(String::new()));
+            let phase_clone = phase.clone();
+
             thread::spawn(move || {
                 let mut bench = Benchmark::new(device);
+                bench.progress = progress_clone.clone();
+                bench.current_phase = phase_clone.clone();
                 let results = bench.run();
                 let mut guard = shared_clone.lock().unwrap();
                 *guard = Some(results);
             });
 
             self.benchmark_results_shared = Some(shared);
+            self.benchmark_progress_shared = Some(progress);
+            self.benchmark_phase_shared = Some(phase);
+        }
+    }
+
+    fn start_background_benchmark(&mut self) {
+        if self.benchmark_running {
+            return;
+        }
+
+        if let Some(idx) = self.selected_disk_index {
+            if idx >= self.disks.len() {
+                return;
+            }
+
+            let device = self.disks[idx].device.clone();
+            self.benchmark_running = true;
+            self.benchmark_background = true;
+            self.benchmark_results = None;
+
+            let shared = Arc::new(Mutex::new(None::<Vec<BenchmarkResult>>));
+            let shared_clone = shared.clone();
+
+            let progress = Arc::new(AtomicU32::new(0));
+            let progress_clone = progress.clone();
+
+            let phase = Arc::new(Mutex::new(String::new()));
+            let phase_clone = phase.clone();
+
+            thread::spawn(move || {
+                let mut bench = Benchmark::new(device);
+                bench.progress = progress_clone;
+                bench.current_phase = phase_clone;
+                let results = bench.run();
+                let mut guard = shared_clone.lock().unwrap();
+                *guard = Some(results);
+            });
+
+            self.benchmark_results_shared = Some(shared);
+            self.benchmark_progress_shared = Some(progress);
+            self.benchmark_phase_shared = Some(phase);
+
+            self.message =
+                Some("Background benchmark started. Press 'b' to check status.".to_string());
+            self.message_timestamp = Some(Instant::now());
+
+            self.current_tab = Tab::Disks;
         }
     }
 
@@ -554,12 +686,38 @@ impl App {
             return;
         }
 
+        if let Some(ref progress_shared) = self.benchmark_progress_shared {
+            let current = progress_shared.load(Ordering::SeqCst);
+            let phase = self
+                .benchmark_phase_shared
+                .as_ref()
+                .and_then(|p| p.lock().ok())
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            let percent = ((current as f64 / 6.0) * 100.0) as u32;
+
+            self.benchmark_progress = Some(BenchmarkProgress {
+                current_block: current,
+                total_blocks: 6,
+                phase,
+                percent,
+            });
+        }
+
         if let Some(ref shared) = self.benchmark_results_shared {
             if let Ok(mut guard) = shared.try_lock() {
                 if let Some(results) = guard.take() {
                     self.benchmark_results = Some(results);
                     self.benchmark_running = false;
-                    self.message = Some("Benchmark complete".to_string());
+
+                    if self.benchmark_background {
+                        self.benchmark_background = false;
+                        self.message =
+                            Some("BENCHMARK COMPLETE! Press b to view results".to_string());
+                    } else {
+                        self.message = Some("Benchmark complete".to_string());
+                    }
+                    self.benchmark_progress = None;
                     self.message_timestamp = Some(Instant::now());
                 }
             }
@@ -627,17 +785,44 @@ impl App {
         let ext = match self.export_format {
             ExportFormat::Json => "json",
             ExportFormat::Csv => "csv",
+            ExportFormat::Html => "html",
         };
         let suffix = match self.export_content {
             ExportContent::SmartOnly => "_smart",
             ExportContent::BenchmarkOnly => "_benchmark",
             ExportContent::Both => "",
         };
-        let path = base_dir.join(format!("dumbctl_export{}{}.", suffix, ext));
+        let filename = if suffix.is_empty() {
+            format!("dumbctl_export.json")
+        } else {
+            format!("dumbctl_export{}.json", suffix)
+        };
+
+        let filename = match self.export_format {
+            ExportFormat::Json => filename,
+            ExportFormat::Csv => {
+                if suffix.is_empty() {
+                    format!("dumbctl_export.csv")
+                } else {
+                    format!("dumbctl_export{}.csv", suffix)
+                }
+            }
+            ExportFormat::Html => {
+                if suffix.is_empty() {
+                    format!("dumbctl_export.html")
+                } else {
+                    format!("dumbctl_export{}.html", suffix)
+                }
+            }
+        };
+        let path = base_dir.join(filename);
 
         let result = match self.export_format {
             ExportFormat::Json => {
                 crate::utils::export_to_json(&path, &disk_data, &smart_data, &benchmark_data)
+            }
+            ExportFormat::Html => {
+                crate::utils::export_to_html(&path, &disk_data, &smart_data, &benchmark_data)
             }
             ExportFormat::Csv => {
                 crate::utils::export_to_csv(&path, &disk_data, &smart_data, &benchmark_data)
@@ -773,7 +958,7 @@ impl App {
             default_text.to_string()
         };
 
-        let version = "dumbctl - v0.1.102";
+        let version = "dumbctl - v0.2.105";
         let version_width = version.len() as u16;
         let status_width = area.width.saturating_sub(version_width + 1);
 

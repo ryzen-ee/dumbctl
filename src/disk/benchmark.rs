@@ -2,6 +2,8 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize)]
@@ -12,11 +14,21 @@ pub struct BenchmarkResult {
     pub duration_ms: u64,
 }
 
+#[derive(Clone)]
+pub struct BenchmarkProgress {
+    pub current_block: u32,
+    pub total_blocks: u32,
+    pub phase: String,
+    pub percent: u32,
+}
+
 pub struct Benchmark {
     pub device: String,
     pub block_size_kb: u32,
     pub test_size_mb: u32,
     pub results: Vec<BenchmarkResult>,
+    pub progress: Arc<AtomicU32>,
+    pub current_phase: Arc<std::sync::Mutex<String>>,
 }
 
 impl Benchmark {
@@ -26,6 +38,8 @@ impl Benchmark {
             block_size_kb: 1024,
             test_size_mb: 256,
             results: Vec::new(),
+            progress: Arc::new(AtomicU32::new(0)),
+            current_phase: Arc::new(std::sync::Mutex::new(String::new())),
         }
     }
 
@@ -33,11 +47,23 @@ impl Benchmark {
         self.results.clear();
 
         let block_sizes = vec![4, 64, 1024];
+        let total = block_sizes.len() as u32 * 2;
 
-        for &block_kb in &block_sizes {
+        for (i, &block_kb) in block_sizes.iter().enumerate() {
             self.block_size_kb = block_kb;
 
+            {
+                let mut phase = self.current_phase.lock().unwrap();
+                *phase = format!("Reading {} KB blocks...", block_kb);
+            }
+            self.progress.store((i * 2 + 1) as u32, Ordering::SeqCst);
             let read_result = self.run_read_test();
+
+            {
+                let mut phase = self.current_phase.lock().unwrap();
+                *phase = format!("Writing {} KB blocks...", block_kb);
+            }
+            self.progress.store((i * 2 + 2) as u32, Ordering::SeqCst);
             let write_result = self.run_write_test();
 
             self.results.push(BenchmarkResult {
@@ -48,7 +74,20 @@ impl Benchmark {
             });
         }
 
+        self.progress.store(total, Ordering::SeqCst);
         self.results.clone()
+    }
+
+    pub fn get_progress(&self) -> BenchmarkProgress {
+        let current = self.progress.load(Ordering::SeqCst);
+        let phase = self.current_phase.lock().unwrap().clone();
+        let percent = ((current as f64 / 6.0) * 100.0) as u32;
+        BenchmarkProgress {
+            current_block: current,
+            total_blocks: 6,
+            phase,
+            percent,
+        }
     }
 
     fn run_read_test(&self) -> f64 {
