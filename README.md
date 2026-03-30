@@ -38,7 +38,7 @@ A Terminal User Interface (TUI) for HDD/SSD health monitoring, benchmarking, and
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/dumbctl.git
+git clone https://github.com/ryzen-ee/dumbctl.git
 cd dumbctl
 
 # Build
