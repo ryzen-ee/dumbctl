@@ -21,6 +21,22 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Update version badge in README
+        run: |
+          VERSION="${{ github.ref_name }}"
+          sed -i "s/version-v[0-9.]*/version-${VERSION:1}/g" README.md
+
+      - name: Commit version badge update
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add README.md
+          git commit -m "docs: Update version badge to ${{ github.ref_name }}" || true
+
+      - name: Push version badge update
+        run: |
+          git push || true
+
       - name: Create tarball
         run: |
           tar -czvf dumbctl-${{ github.ref_name }}-linux-x64.tar.gz \

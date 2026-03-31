@@ -14,6 +14,7 @@ pub struct BenchmarkResult {
     pub duration_ms: u64,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct BenchmarkProgress {
     pub current_block: u32,
@@ -78,6 +79,7 @@ impl Benchmark {
         self.results.clone()
     }
 
+    #[allow(dead_code)]
     pub fn get_progress(&self) -> BenchmarkProgress {
         let current = self.progress.load(Ordering::SeqCst);
         let phase = self.current_phase.lock().unwrap().clone();

@@ -1,5 +1,7 @@
+use crate::database::BenchmarkHistoryEntry;
 use crate::disk::{benchmark::BenchmarkResult, DiskInfo, SmartData};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -241,6 +243,7 @@ pub fn export_to_html(
     disk_data: &Option<DiskInfo>,
     smart_data: &Option<SmartData>,
     benchmark: &Option<Vec<BenchmarkResult>>,
+    history: Option<&Vec<BenchmarkHistoryEntry>>,
 ) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -349,11 +352,309 @@ pub fn export_to_html(
             }
             html.push_str("        </table>\n    </div>\n");
         }
+
+        if let Some(hist) = history {
+            if !hist.is_empty() {
+                let mut by_ts: HashMap<String, Vec<&BenchmarkHistoryEntry>> = HashMap::new();
+                for h in hist.iter() {
+                    by_ts.entry(h.timestamp.clone()).or_default().push(h);
+                }
+
+                let mut sorted_ts: Vec<_> = by_ts.keys().cloned().collect();
+                sorted_ts.sort_by(|a, b| b.cmp(a));
+
+                html.push_str("    <div class=\"card\">\n        <h2>Benchmark History</h2>\n");
+                html.push_str("        <script>\n");
+                html.push_str("            function toggleHistory(id) {\n");
+                html.push_str("                var el = document.getElementById(id);\n");
+                html.push_str("                el.style.display = el.style.display === 'none' ? 'table' : 'none';\n");
+                html.push_str("            }\n");
+                html.push_str("        </script>\n");
+
+                for (num, ts) in sorted_ts.iter().enumerate().take(15) {
+                    let entries = by_ts.get(ts).unwrap();
+
+                    html.push_str(&format!(
+                        "        <details>\n            <summary style=\"cursor:pointer; font-weight:bold; padding:4px; margin:4px 0;\">\n                {}. [+] {} ({} blocks)\n            </summary>\n",
+                        num + 1, ts, entries.len()
+                    ));
+                    html.push_str(
+                        "            <table style=\"margin-left:20px; margin-top:8px;\">\n",
+                    );
+                    html.push_str("                <tr><th>Block (KB)</th><th>Read (MB/s)</th><th>Write (MB/s)</th></tr>\n");
+                    for e in entries {
+                        html.push_str(&format!(
+                            "                <tr><td>{}</td><td class=\"benchmark-read\">{:.2}</td><td class=\"benchmark-write\">{:.2}</td></tr>\n",
+                            e.block_size_kb, e.read_speed_mbps, e.write_speed_mbps
+                        ));
+                    }
+                    html.push_str("            </table>\n");
+                    html.push_str("        </details>\n");
+                }
+                html.push_str("    </div>\n");
+            }
+        }
     }
 
     html.push_str("</body>\n</html>\n");
 
     std::fs::write(path, html).map_err(|e| format!("Failed to write HTML file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map(|m| m.permissions())
+            .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o644));
+        perms.set_mode(0o644);
+        std::fs::set_permissions(path, perms).ok();
+    }
+
+    Ok(())
+}
+
+pub fn export_to_pdf(
+    path: &PathBuf,
+    disk_data: &Option<DiskInfo>,
+    smart_data: &Option<SmartData>,
+    benchmark: &Option<Vec<BenchmarkResult>>,
+    history: Option<&Vec<BenchmarkHistoryEntry>>,
+) -> Result<(), String> {
+    use printpdf::*;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let (doc, page1, layer1) = PdfDocument::new("Disk Report", Mm(210.0), Mm(297.0), "Layer 1");
+
+    let font = doc.add_builtin_font(BuiltinFont::Helvetica).unwrap();
+    let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).unwrap();
+
+    let current_layer = doc.get_page(page1).get_layer(layer1);
+
+    let mut y_pos = 280.0;
+
+    current_layer.use_text("Disk Report", 24.0, Mm(20.0), Mm(y_pos), &font_bold);
+    y_pos -= 10.0;
+
+    let export_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    current_layer.use_text(
+        &format!("Generated: {}", export_time),
+        10.0,
+        Mm(20.0),
+        Mm(y_pos),
+        &font,
+    );
+    y_pos -= 15.0;
+
+    if let Some(disk) = disk_data {
+        current_layer.use_text("Disk Information", 14.0, Mm(20.0), Mm(y_pos), &font_bold);
+        y_pos -= 8.0;
+
+        let size_gb = disk.size / (1024 * 1024 * 1024);
+        let media_type = format!("{:?}", disk.media_type);
+        let model = disk.model.trim().to_string();
+
+        let info = [
+            ("Device:", disk.device.as_str()),
+            ("Model:", model.as_str()),
+            ("Serial:", disk.serial.as_str()),
+            ("Size:", &format!("{} GB", size_gb)),
+            ("Type:", media_type.as_str()),
+        ];
+
+        for (label, value) in info {
+            current_layer.use_text(
+                &format!("{} {}", label, value),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+        }
+        y_pos -= 5.0;
+
+        if let Some(smart) = smart_data {
+            current_layer.use_text("SMART Status", 14.0, Mm(20.0), Mm(y_pos), &font_bold);
+            y_pos -= 8.0;
+
+            current_layer.use_text(
+                &format!("Health: {}", smart.overall_health),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+
+            if let Some(temp) = smart.temperature {
+                current_layer.use_text(
+                    &format!("Temperature: {}°C", temp),
+                    10.0,
+                    Mm(20.0),
+                    Mm(y_pos),
+                    &font,
+                );
+                y_pos -= 5.0;
+            }
+
+            current_layer.use_text(
+                &format!("Power On: {} hours", smart.power_on_hours),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+            current_layer.use_text(
+                &format!("Reallocated: {} sectors", smart.reallocated_sectors),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+            current_layer.use_text(
+                &format!("Pending: {} sectors", smart.pending_sectors),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+            current_layer.use_text(
+                &format!("Uncorrectable: {} errors", smart.uncorrectable_errors),
+                10.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 8.0;
+
+            if !smart.attributes.is_empty() {
+                current_layer.use_text("SMART Attributes", 12.0, Mm(20.0), Mm(y_pos), &font_bold);
+                y_pos -= 6.0;
+                current_layer.use_text(
+                    "ID  Name        Value  Worst  Thresh  Raw",
+                    8.0,
+                    Mm(20.0),
+                    Mm(y_pos),
+                    &font,
+                );
+                y_pos -= 4.0;
+
+                for attr in &smart.attributes {
+                    if y_pos < 20.0 {
+                        break;
+                    }
+                    current_layer.use_text(
+                        &format!(
+                            "{}  {:12} {}  {}  {}  {}",
+                            attr.id, attr.name, attr.value, attr.worst, attr.threshold, attr.raw
+                        ),
+                        7.0,
+                        Mm(20.0),
+                        Mm(y_pos),
+                        &font,
+                    );
+                    y_pos -= 4.0;
+                }
+            }
+        }
+
+        if let Some(results) = benchmark {
+            y_pos -= 5.0;
+            current_layer.use_text("Benchmark Results", 14.0, Mm(20.0), Mm(y_pos), &font_bold);
+            y_pos -= 8.0;
+            current_layer.use_text(
+                "Block Size (KB)  Read (MB/s)  Write (MB/s)",
+                9.0,
+                Mm(20.0),
+                Mm(y_pos),
+                &font,
+            );
+            y_pos -= 5.0;
+
+            for result in results {
+                if y_pos < 20.0 {
+                    break;
+                }
+                current_layer.use_text(
+                    &format!(
+                        "{:16} {:12.2} {:12.2}",
+                        result.block_size_kb, result.read_speed_mbps, result.write_speed_mbps
+                    ),
+                    9.0,
+                    Mm(20.0),
+                    Mm(y_pos),
+                    &font,
+                );
+                y_pos -= 5.0;
+            }
+
+            if let Some(hist) = history {
+                if !hist.is_empty() {
+                    y_pos -= 8.0;
+                    current_layer.use_text(
+                        "Benchmark History",
+                        12.0,
+                        Mm(20.0),
+                        Mm(y_pos),
+                        &font_bold,
+                    );
+                    y_pos -= 6.0;
+
+                    let mut by_ts: HashMap<String, Vec<&BenchmarkHistoryEntry>> = HashMap::new();
+                    for h in hist.iter() {
+                        by_ts.entry(h.timestamp.clone()).or_default().push(h);
+                    }
+
+                    for (ts, entries) in by_ts.iter().take(10) {
+                        if y_pos < 30.0 {
+                            break;
+                        }
+                        current_layer.use_text(ts, 10.0, Mm(20.0), Mm(y_pos), &font_bold);
+                        y_pos -= 5.0;
+
+                        current_layer.use_text(
+                            "Block(KB)  Read     Write",
+                            8.0,
+                            Mm(20.0),
+                            Mm(y_pos),
+                            &font,
+                        );
+                        y_pos -= 4.0;
+
+                        for e in entries {
+                            if y_pos < 20.0 {
+                                break;
+                            }
+                            current_layer.use_text(
+                                &format!(
+                                    "{:8} {:8.2} {:8.2}",
+                                    e.block_size_kb, e.read_speed_mbps, e.write_speed_mbps
+                                ),
+                                8.0,
+                                Mm(20.0),
+                                Mm(y_pos),
+                                &font,
+                            );
+                            y_pos -= 4.0;
+                        }
+                        y_pos -= 3.0;
+                    }
+                }
+            }
+        }
+    }
+
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("Failed to create PDF file: {}", e))?;
+    doc.save(&mut std::io::BufWriter::new(file))
+        .map_err(|e| format!("Failed to save PDF: {}", e))?;
 
     #[cfg(unix)]
     {

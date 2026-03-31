@@ -1,6 +1,7 @@
 pub mod components;
 pub mod tabs;
 
+use crate::database;
 use crate::disk::benchmark::{Benchmark, BenchmarkProgress, BenchmarkResult};
 use crate::disk::{self, DiskInfo, SmartData};
 use crate::settings::Settings;
@@ -78,7 +79,6 @@ pub struct App {
     pub export_status_timestamp: Option<Instant>,
     pub export_running: bool,
     pub benchmark_running: bool,
-    pub benchmark_background: bool,
     pub benchmark_progress: Option<BenchmarkProgress>,
     pub message: Option<String>,
     pub message_timestamp: Option<Instant>,
@@ -91,6 +91,10 @@ pub struct App {
     pub settings_input_buffer: String,
     pub search_query: String,
     pub search_active: bool,
+    pub database: database::Database,
+    pub benchmark_history: Vec<database::BenchmarkHistoryEntry>,
+    pub benchmark_history_selected: Option<usize>,
+    pub benchmark_history_expanded: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +111,7 @@ pub enum ExportFormat {
     Json,
     Csv,
     Html,
+    Pdf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,8 +173,9 @@ impl App {
     pub fn new() -> Self {
         let disks = disk::detect_disks();
         let settings = Settings::load();
+        let database = database::Database::new().unwrap_or_else(|_| database::Database::default());
 
-        Self {
+        let mut app = Self {
             disks,
             selected_disk_index: None,
             smart_data: None,
@@ -183,7 +189,6 @@ impl App {
             export_status_timestamp: None,
             export_running: false,
             benchmark_running: false,
-            benchmark_background: false,
             benchmark_progress: None,
             message: None,
             message_timestamp: None,
@@ -196,7 +201,26 @@ impl App {
             settings_input_buffer: String::new(),
             search_query: String::new(),
             search_active: false,
+            database,
+            benchmark_history: Vec::new(),
+            benchmark_history_selected: None,
+            benchmark_history_expanded: Vec::new(),
+        };
+
+        if app.disks.len() > 1 {
+            app.selected_disk_index = Some(0);
+            app.disk_list_state.select(0, app.disks.len());
         }
+
+        if let Some(idx) = app.selected_disk_index {
+            if let Some(disk) = app.disks.get(idx) {
+                if let Ok(history) = app.database.get_history(&disk.device, &disk.serial, 50) {
+                    app.benchmark_history = history;
+                }
+            }
+        }
+
+        app
     }
 
     pub fn run(
@@ -256,11 +280,17 @@ impl App {
                                             return Ok(());
                                         }
                                     }
-                                    KeyCode::Tab if !settings_editing => {
-                                        self.current_tab = self.current_tab.next()
+                                    KeyCode::Right if !settings_editing => {
+                                        self.current_tab = self.current_tab.next();
+                                        if self.current_tab == Tab::Benchmark {
+                                            self.load_benchmark_history();
+                                        }
                                     }
-                                    KeyCode::BackTab if !settings_editing => {
-                                        self.current_tab = self.current_tab.prev()
+                                    KeyCode::Left if !settings_editing => {
+                                        self.current_tab = self.current_tab.prev();
+                                        if self.current_tab == Tab::Benchmark {
+                                            self.load_benchmark_history();
+                                        }
                                     }
                                     KeyCode::Char('/')
                                         if self.current_tab == Tab::Disks && !settings_editing =>
@@ -297,11 +327,37 @@ impl App {
                                     KeyCode::Char('s') if self.current_tab == Tab::Benchmark => {
                                         self.start_benchmark();
                                     }
-                                    KeyCode::Char('b') if self.current_tab == Tab::Benchmark => {
-                                        self.start_background_benchmark();
+                                    KeyCode::Char('c') if self.current_tab == Tab::Benchmark => {
+                                        if !self.benchmark_history.is_empty() {
+                                            if let Err(e) = self.database.clear_all_history() {
+                                                eprintln!("Failed to clear history: {}", e);
+                                            }
+                                            self.benchmark_history.clear();
+                                            self.benchmark_history_selected = None;
+                                            self.benchmark_history_expanded.clear();
+                                            self.message =
+                                                Some("Benchmark history cleared".to_string());
+                                            self.message_timestamp = Some(Instant::now());
+                                        }
                                     }
-                                    KeyCode::Up if !settings_editing => self.handle_up(),
-                                    KeyCode::Down if !settings_editing => self.handle_down(),
+                                    KeyCode::Up if !settings_editing => {
+                                        if self.current_tab == Tab::Benchmark
+                                            && !self.benchmark_history.is_empty()
+                                        {
+                                            self.navigate_history(-1);
+                                        } else {
+                                            self.handle_up();
+                                        }
+                                    }
+                                    KeyCode::Down if !settings_editing => {
+                                        if self.current_tab == Tab::Benchmark
+                                            && !self.benchmark_history.is_empty()
+                                        {
+                                            self.navigate_history(1);
+                                        } else {
+                                            self.handle_down();
+                                        }
+                                    }
                                     KeyCode::Enter => self.handle_enter(),
                                     KeyCode::Char(' ')
                                         if self.current_tab == Tab::Settings
@@ -419,8 +475,41 @@ impl App {
         }
     }
 
+    fn navigate_history(&mut self, delta: i32) {
+        use std::collections::BTreeMap;
+
+        if self.benchmark_history.is_empty() {
+            return;
+        }
+
+        let mut by_ts: BTreeMap<String, Vec<_>> = BTreeMap::new();
+        for h in &self.benchmark_history {
+            by_ts.entry(h.timestamp.clone()).or_default().push(h);
+        }
+
+        let timestamps: Vec<String> = by_ts.keys().rev().cloned().collect();
+
+        if timestamps.is_empty() {
+            return;
+        }
+
+        let current = self.benchmark_history_selected;
+
+        let new_idx = if let Some(curr) = current {
+            let new_i = (curr as i32 + delta) as usize;
+            if new_i >= timestamps.len() {
+                0
+            } else {
+                new_i
+            }
+        } else {
+            0
+        };
+
+        self.benchmark_history_selected = Some(new_idx);
+    }
+
     fn toggle_export_next(&mut self) {
-        // Cycle: JSON+SMART -> JSON+Benchmark -> JSON+Both -> CSV+SMART -> CSV+Benchmark -> CSV+Both -> HTML+SMART -> HTML+Benchmark -> HTML+Both -> back
         match (self.export_format, self.export_content) {
             (ExportFormat::Json, ExportContent::SmartOnly) => {
                 self.export_content = ExportContent::BenchmarkOnly
@@ -449,6 +538,16 @@ impl App {
                 self.export_content = ExportContent::Both;
             }
             (ExportFormat::Html, ExportContent::Both) => {
+                self.export_format = ExportFormat::Pdf;
+                self.export_content = ExportContent::SmartOnly;
+            }
+            (ExportFormat::Pdf, ExportContent::SmartOnly) => {
+                self.export_content = ExportContent::BenchmarkOnly
+            }
+            (ExportFormat::Pdf, ExportContent::BenchmarkOnly) => {
+                self.export_content = ExportContent::Both;
+            }
+            (ExportFormat::Pdf, ExportContent::Both) => {
                 self.export_format = ExportFormat::Json;
                 self.export_content = ExportContent::SmartOnly;
             }
@@ -458,7 +557,7 @@ impl App {
     fn toggle_export_prev(&mut self) {
         match (self.export_format, self.export_content) {
             (ExportFormat::Json, ExportContent::SmartOnly) => {
-                self.export_format = ExportFormat::Html;
+                self.export_format = ExportFormat::Pdf;
                 self.export_content = ExportContent::Both;
             }
             (ExportFormat::Json, ExportContent::BenchmarkOnly) => {
@@ -485,6 +584,16 @@ impl App {
                 self.export_content = ExportContent::SmartOnly;
             }
             (ExportFormat::Html, ExportContent::Both) => {
+                self.export_content = ExportContent::BenchmarkOnly;
+            }
+            (ExportFormat::Pdf, ExportContent::SmartOnly) => {
+                self.export_format = ExportFormat::Html;
+                self.export_content = ExportContent::Both;
+            }
+            (ExportFormat::Pdf, ExportContent::BenchmarkOnly) => {
+                self.export_content = ExportContent::SmartOnly;
+            }
+            (ExportFormat::Pdf, ExportContent::Both) => {
                 self.export_content = ExportContent::BenchmarkOnly;
             }
         }
@@ -497,6 +606,33 @@ impl App {
                     if idx < self.disks.len() {
                         self.load_disk_data(idx);
                         self.current_tab = Tab::Smart;
+                    }
+                }
+            }
+            Tab::Benchmark => {
+                if !self.benchmark_history.is_empty() {
+                    use std::collections::BTreeMap;
+                    let mut by_ts: BTreeMap<String, Vec<_>> = BTreeMap::new();
+                    for h in &self.benchmark_history {
+                        by_ts.entry(h.timestamp.clone()).or_default().push(h);
+                    }
+                    let timestamps: Vec<_> = by_ts.keys().rev().cloned().collect();
+
+                    if timestamps.is_empty() {
+                        return;
+                    }
+
+                    let selected = self.benchmark_history_selected.unwrap_or(0);
+                    let selected_ts = timestamps[selected].clone();
+
+                    if let Some(idx) = self
+                        .benchmark_history_expanded
+                        .iter()
+                        .position(|t| t == &selected_ts)
+                    {
+                        self.benchmark_history_expanded.remove(idx);
+                    } else {
+                        self.benchmark_history_expanded.push(selected_ts);
                     }
                 }
             }
@@ -585,10 +721,28 @@ impl App {
         self.message_timestamp = Some(Instant::now());
     }
 
+    fn load_benchmark_history(&mut self) {
+        if let Some(idx) = self.selected_disk_index {
+            if let Some(disk) = self.disks.get(idx) {
+                if let Ok(history) = self.database.get_history(&disk.device, &disk.serial, 50) {
+                    self.benchmark_history = history;
+                    self.benchmark_history_selected = None;
+                    self.benchmark_history_expanded = Vec::new();
+                }
+            }
+        }
+    }
+
     fn load_disk_data(&mut self, index: usize) {
         if index < self.disks.len() {
             let disk = &self.disks[index];
             self.smart_data = Some(crate::disk::smart::get_smart_data(disk));
+
+            if let Ok(history) = self.database.get_history(&disk.device, &disk.serial, 50) {
+                self.benchmark_history = history;
+                self.benchmark_history_selected = None;
+                self.benchmark_history_expanded = Vec::new();
+            }
         }
     }
 
@@ -636,51 +790,6 @@ impl App {
         }
     }
 
-    fn start_background_benchmark(&mut self) {
-        if self.benchmark_running {
-            return;
-        }
-
-        if let Some(idx) = self.selected_disk_index {
-            if idx >= self.disks.len() {
-                return;
-            }
-
-            let device = self.disks[idx].device.clone();
-            self.benchmark_running = true;
-            self.benchmark_background = true;
-            self.benchmark_results = None;
-
-            let shared = Arc::new(Mutex::new(None::<Vec<BenchmarkResult>>));
-            let shared_clone = shared.clone();
-
-            let progress = Arc::new(AtomicU32::new(0));
-            let progress_clone = progress.clone();
-
-            let phase = Arc::new(Mutex::new(String::new()));
-            let phase_clone = phase.clone();
-
-            thread::spawn(move || {
-                let mut bench = Benchmark::new(device);
-                bench.progress = progress_clone;
-                bench.current_phase = phase_clone;
-                let results = bench.run();
-                let mut guard = shared_clone.lock().unwrap();
-                *guard = Some(results);
-            });
-
-            self.benchmark_results_shared = Some(shared);
-            self.benchmark_progress_shared = Some(progress);
-            self.benchmark_phase_shared = Some(phase);
-
-            self.message =
-                Some("Background benchmark started. Press 'b' to check status.".to_string());
-            self.message_timestamp = Some(Instant::now());
-
-            self.current_tab = Tab::Disks;
-        }
-    }
-
     fn check_benchmark_completion(&mut self) {
         if !self.benchmark_running {
             return;
@@ -707,16 +816,37 @@ impl App {
         if let Some(ref shared) = self.benchmark_results_shared {
             if let Ok(mut guard) = shared.try_lock() {
                 if let Some(results) = guard.take() {
-                    self.benchmark_results = Some(results);
+                    self.benchmark_results = Some(results.clone());
                     self.benchmark_running = false;
 
-                    if self.benchmark_background {
-                        self.benchmark_background = false;
-                        self.message =
-                            Some("BENCHMARK COMPLETE! Press b to view results".to_string());
-                    } else {
-                        self.message = Some("Benchmark complete".to_string());
+                    if let Some(idx) = self.selected_disk_index {
+                        if let Some(disk) = self.disks.get(idx) {
+                            let db_results: Vec<(i32, f64, f64)> = results
+                                .iter()
+                                .map(|r| {
+                                    (
+                                        r.block_size_kb as i32,
+                                        r.read_speed_mbps,
+                                        r.write_speed_mbps,
+                                    )
+                                })
+                                .collect();
+                            if let Err(e) = self.database.save_benchmark(
+                                &disk.device,
+                                &disk.serial,
+                                &db_results,
+                            ) {
+                                eprintln!("Failed to save benchmark: {}", e);
+                            }
+                            if let Ok(history) =
+                                self.database.get_history(&disk.device, &disk.serial, 50)
+                            {
+                                self.benchmark_history = history;
+                            }
+                        }
                     }
+
+                    self.message = Some("Benchmark complete".to_string());
                     self.benchmark_progress = None;
                     self.message_timestamp = Some(Instant::now());
                 }
@@ -782,10 +912,11 @@ impl App {
             PathBuf::from(&self.settings.export_path)
         };
 
-        let ext = match self.export_format {
+        let _ext = match self.export_format {
             ExportFormat::Json => "json",
             ExportFormat::Csv => "csv",
             ExportFormat::Html => "html",
+            ExportFormat::Pdf => "pdf",
         };
         let suffix = match self.export_content {
             ExportContent::SmartOnly => "_smart",
@@ -814,19 +945,43 @@ impl App {
                     format!("dumbctl_export{}.html", suffix)
                 }
             }
+            ExportFormat::Pdf => {
+                if suffix.is_empty() {
+                    format!("dumbctl_export.pdf")
+                } else {
+                    format!("dumbctl_export{}.pdf", suffix)
+                }
+            }
         };
         let path = base_dir.join(filename);
+
+        let history_ref = if self.benchmark_history.is_empty() {
+            None
+        } else {
+            Some(&self.benchmark_history)
+        };
 
         let result = match self.export_format {
             ExportFormat::Json => {
                 crate::utils::export_to_json(&path, &disk_data, &smart_data, &benchmark_data)
             }
-            ExportFormat::Html => {
-                crate::utils::export_to_html(&path, &disk_data, &smart_data, &benchmark_data)
-            }
+            ExportFormat::Html => crate::utils::export_to_html(
+                &path,
+                &disk_data,
+                &smart_data,
+                &benchmark_data,
+                history_ref,
+            ),
             ExportFormat::Csv => {
                 crate::utils::export_to_csv(&path, &disk_data, &smart_data, &benchmark_data)
             }
+            ExportFormat::Pdf => crate::utils::export_to_pdf(
+                &path,
+                &disk_data,
+                &smart_data,
+                &benchmark_data,
+                history_ref,
+            ),
         };
 
         self.export_running = false;
@@ -945,9 +1100,11 @@ impl App {
         let default_text = if is_editing {
             "EDITING: Type path | Enter: confirm | Esc: cancel"
         } else if self.current_tab == Tab::Settings {
-            "Tab: switch | ↑/↓: navigate | Enter: edit path | Space: cycle | Ctrl+S: save | Ctrl+R: reset | Esc: cancel"
+            "←/→: switch | ↑/↓: navigate | Enter: edit | Space: cycle | Ctrl+S: save"
+        } else if self.current_tab == Tab::Benchmark {
+            "←/→: switch | ↑/↓: navigate | Enter: expand | s: start | c: clear"
         } else {
-            "Tab: switch | ↑/↓: navigate | Enter: select | r: refresh | s: benchmark | q: quit"
+            "←/→: switch | ↑/↓: navigate | Enter: select | r: refresh | s: benchmark"
         };
 
         let text = if let Some(msg) = &self.message {
@@ -958,7 +1115,7 @@ impl App {
             default_text.to_string()
         };
 
-        let version = "dumbctl - v0.2.105";
+        let version = "dumbctl - v0.3.114";
         let version_width = version.len() as u16;
         let status_width = area.width.saturating_sub(version_width + 1);
 

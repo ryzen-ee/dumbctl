@@ -49,6 +49,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ExportFormat::Json => "JSON",
         ExportFormat::Csv => "CSV",
         ExportFormat::Html => "HTML",
+        ExportFormat::Pdf => "PDF",
     };
 
     let content_label = app.export_content.label();
